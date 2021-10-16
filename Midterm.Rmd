@@ -1,0 +1,35 @@
+---
+title: "Midterm"
+author: "Yandra Mariano"
+date: "10/16/2021"
+output: html_document
+---
+
+```{r}
+#opening packages
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+
+#importing data
+BRFSSmid <- read_csv(
+"https://raw.githubusercontent.com/kijohnson/ADA-Fall-2021/master/BRFSS2017_10percent_v.csv")
+dim(BRFSSmid)
+
+#recode sex variable
+colnames(BRFSSmid)
+str(BRFSSmid)
+BRFSSmid$SEX <- factor(ifelse(BRFSSmid$SEX==1, "male","female"))
+BRFSSmid$SEX
+levels(BRFSSmid$SEX)
+
+#median heights for males and females
+median(BRFSSmid$ht_meters, na.rm = T)
+BRFSSmid %>% group_by(SEX) %>%
+  summarise(median (ht_meters, na.rm = T))
+
+#base plot
+ggplot(data = BRFSSmid, aes(x = SEX, y= ht_meters)) +
+  geom_boxplot(aes(fill = SEX))
+```
