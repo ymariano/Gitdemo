@@ -1,0 +1,157 @@
+---
+title: "ADA project"
+author: "Yandra Mariano"
+date: "12/3/2021"
+output: pdf_document
+---
+# Research question: Does smoking lead to poor mental health?
+```{r}
+#install.packages("stargazer")  For model comparison
+#install.packages("sandwich") For robust SE estimator
+#install.packages("MASS") For negative binomial
+#install.packages("lmtest") For model comparison
+#install.packages("foreign") To import SAS BRFSS 2020 dataset
+
+library(stargazer)
+library(sandwich)
+library(MASS)
+library(lmtest)
+library(foreign)
+
+#importing dataset into R
+BRFSS2020 <- read.xport("BRFSS2020.XPT")
+```
+
+# Now I will begin cleaning my data for analysis:
+```{r}
+#creating subdataset with variables of interest, coding RFSMOK3 into factor var
+library(dplyr) 
+df <- BRFSS2020 %>%
+    select(SEXVAR, MENTHLTH, X_IMPRACE, X_RFSMOK3) %>%
+    mutate(X_RFSMOK3 = recode_factor(.x = X_RFSMOK3,
+                                        '1' = "No",
+                                        '2' = "Yes")) %>%
+  na.omit
+
+# check new data
+summary(object = df)
+
+table(df$SEXVAR)
+table(df$X_IMPRACE)
+table(df$X_RFSMOK3)
+
+#changing to 0 (MENTHLTH) and N.A. (MENTHLTH & RFSMOK3)
+df$MENTHLTH[
+  df$MENTHLTH=="88"]<-0 
+
+df$MENTHLTH[df$MENTHLTH==77] <- NA
+df$MENTHLTH[df$MENTHLTH==99] <- NA
+df$X_RFSMOK3[df$X_RFSMOK3==9] <- NA
+
+table(df$MENTHLTH)
+table(df$X_RFSMOK3)
+
+# descriptive table including entire small dataset
+library("tableone")
+desc.table <- CreateTableOne(data = df)
+print(desc.table, nonnormal = c('SEXVAR', 'X_IMPRACE', 'X_RFSMOK3'))
+```
+
+# Now I will begin the Poisson regression analysis:
+```{r}
+#function to calculate IRR
+glm.RR <- function(GLM.RESULT, digits = 2) {
+
+    if (GLM.RESULT$family$family == "binomial") {
+        LABEL <- "OR"
+    } else if (GLM.RESULT$family$family == "poisson") {
+        LABEL <- "RR"
+    } else {
+        stop("Not logistic or Poisson model")
+    }
+
+    COEF      <- stats::coef(GLM.RESULT)
+    CONFINT   <- stats::confint(GLM.RESULT)
+    TABLE     <- cbind(coef=COEF, CONFINT)
+    TABLE.EXP <- round(exp(TABLE), digits)
+
+    colnames(TABLE.EXP)[1] <- LABEL
+
+    TABLE.EXP
+}
+
+# Check shape of distribution of counts of poor mental health days (1 - 30 days) using density plot
+# poor mental health days distribution
+library(tidyverse)
+df %>% 
+  ggplot(aes(x = MENTHLTH)) +
+  geom_histogram()
+```
+
+I want to determine whether the number of poor mental health days varies between the smoking status (mean count of cases) after adjusting for sex. Since MENTHLTH (# of days with poor mental health) are counts per person, I will not use an **offset*.
+
+# Poisson regression models
+```{r}
+#without offset
+model.0 <- glm(MENTHLTH ~ X_RFSMOK3 + SEXVAR, family ="poisson", data = df)
+summary(model.0) 
+```
+
+# Use the function glm.RR created above to get IRRs and 95% CIs 
+```{r}
+glm.RR(model.0, 3) # the second option in the function is the number of decimal places
+```
+
+Interpretation: The incidence rate of poor mental health days among smokers is 51% (95% CI 1.501-1.511) times higher than the incidence rate of poor mental health days experienced by non-smokers after adjusting for biological sex.
+
+# Running Negative binomial regression to check for overdispersion
+```{r}
+#negative binomial model (no offset)
+model.0nb <- glm.nb(MENTHLTH ~ X_RFSMOK3 + SEXVAR,control=glm.control(maxit=50), data = df)
+summary(model.0nb)
+
+#run lrtest to compare models
+lrtest(model.0, model.0nb)
+```
+Overdispersion seems to be present due to the significant p-value (p<2.2e-16) for the Likelihood ratio test comparing the Poisson and Negative Binomial Regression models.
+
+New Interpretation: The incidence rate of poor mental health days among smokers is 51% (95% CI 1.501-1.511) times higher than the incidence rate of poor mental health days experienced by non-smokers after adjusting for biological sex.
+
+# I will now use robust standard errors to correct for SEs overdispersion. To get robust standard errors, I am using the code below 
+```{r, eval=FALSE}
+## Poisson model with SE estimated via robust variance estimator
+coeftest(model.0, vcov = sandwich)
+
+#You can get the robust standard errors shown in the table using the code below
+cov.model.0 <- vcovHC(model.0, type="HC0") #type specifies variance estimator method, the vcovHC function gives the covariance matrix of the coefficient estimates. Need this to calculate robust SE
+std.err <- sqrt(diag(cov.model.0)) #estimate robust standard errors for each coefficient
+std.err
+
+#make a summary table of IRRs,  p-values and LL and UL confidence intervals 
+r.est2 <- cbind(IRR= exp(coef(model.0)), "Robust SE" = std.err,
+"Pr(>|z|)" =round(2 *pnorm(abs(coef(model.0)/std.err),lower.tail=FALSE), 4),
+LL = exp(coef(model.0) - 1.96 * std.err),
+UL = exp(coef(model.0) + 1.96 * std.err))
+options(digits=10)
+r.est2
+```
+# Below I further compare the estimates between the two models. As the results show, the Poisson regression estimates SEs that are usually smaller than those from the negbin. This implies that the Poisson regression leads to biased significance tests, and tends to make non-significant predictors significant. 
+
+Final Interpretation: The incidence rate of poor mental health days among smokers is 51% (95% CI 1.485-1.526) times higher than the incidence rate of poor mental health days experienced by non-smokers after adjusting for biological sex.
+
+```{r, eval=FALSE}
+stargazer(model.0, model.0nb, title="Model Comparison",
+          type="text",align=TRUE,single.row=TRUE, digits=6)
+```
+
+# I will now check for effect modification of poor mental health days related to smoking by sex 
+```{r}
+#without offset (smoking status*sex)
+model.sexint <- glm.nb(MENTHLTH ~ X_RFSMOK3 + SEXVAR + X_RFSMOK3*SEXVAR, control=glm.control(maxit=50), data = df)
+summary(model.sexint)
+
+#Test the hypothesis with the lrtest
+lrtest(model.0nb, model.sexint)
+```
+
+Interpretation: The interaction between smoking status and biological sex does not impact the relationship between smoking and poor mental health. (Not significant)
